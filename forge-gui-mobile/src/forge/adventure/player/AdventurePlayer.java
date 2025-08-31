@@ -452,21 +452,28 @@ public class AdventurePlayer implements Serializable, SaveFileContent {
                 String[] slots = (String[]) data.readObject("equippedSlots");
                 Long[] items = (Long[]) data.readObject("equippedItems");
 
-                assert (slots.length == items.length);
-                // Prevent items with wrong names. If it triggered in inventory, it'll trigger here as well.
-                for (int i = 0; i < slots.length; i++) {
-                    ItemData itemData = getItemFromInventory(items[i]);
-                    if (itemData != null) {
-                        if (itemData.longID == null)
-                            itemData = itemData.clone();
-                        if (itemData.longID != null) {
-                            itemData.isEquipped = true;
-                            equippedItems.put(slots[i], itemData.longID);
-                        } else {
-                            itemData.isEquipped = false;
-                            System.err.println("Missing ID: " + itemData.name);
+                System.out.println("DEBUG: slots = " + (slots == null ? "null" : "array[" + slots.length + "]"));
+                System.out.println("DEBUG: items = " + (items == null ? "null" : "array[" + items.length + "]"));
+
+                if (slots != null && items != null) {
+                    assert (slots.length == items.length);
+                    // Prevent items with wrong names. If it triggered in inventory, it'll trigger here as well.
+                    for (int i = 0; i < slots.length; i++) {
+                        ItemData itemData = getItemFromInventory(items[i]);
+                        if (itemData != null) {
+                            if (itemData.longID == null)
+                                itemData = itemData.clone();
+                            if (itemData.longID != null) {
+                                itemData.isEquipped = true;
+                                equippedItems.put(slots[i], itemData.longID);
+                            } else {
+                                itemData.isEquipped = false;
+                                System.err.println("Missing ID: " + itemData.name);
+                            }
                         }
                     }
+                } else {
+                    System.out.println("DEBUG: Skipping equipped items processing due to null arrays");
                 }
             } catch (Exception ignored) {}
         }
