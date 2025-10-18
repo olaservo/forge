@@ -48,6 +48,20 @@ public final class CardDb implements ICardDatabase, IDeckGenPool {
     private final String exlcudedCardName = "Concentrate";
     private final String exlcudedCardSet = "DS0";
 
+    // Universes Beyond set codes - deprioritized when selecting default card printings
+    private static final Set<String> UNIVERSES_BEYOND_SETS = new HashSet<>(Arrays.asList(
+        "WHO",  // Doctor Who Commander
+        "BOT",  // Transformers
+        "40K",  // Warhammer 40,000 Commander
+        "LTR",  // The Lord of the Rings: Tales of Middle-earth
+        "LTC",  // The Lord of the Rings: Tales of Middle-earth Commander
+        "ACR",  // Assassin's Creed
+        "TLA",  // Avatar: The Last Airbender
+        "TAE",  // Avatar: The Last Airbender - Eternal
+        "FAL",  // Fallout Commander
+        "SLX"   // Secret Lair: Universes Within (alternate art versions)
+    ));
+
     // need this to obtain cardReference by name+set+artindex
     private final ListMultimap<String, PaperCard> allCardsByName = Multimaps.newListMultimap(new TreeMap<>(String.CASE_INSENSITIVE_ORDER), Lists::newArrayList);
     private final Map<String, PaperCard> uniqueCardsByName = Maps.newTreeMap(String.CASE_INSENSITIVE_ORDER);
@@ -919,9 +933,20 @@ public final class CardDb implements ICardDatabase, IDeckGenPool {
             acceptedEditions.addAll(cardEditions);
 
         if (acceptedEditions.size() > 1) {
-            Collections.sort(acceptedEditions);  // CardEdition correctly sort by (release) date
-            if (artPref.latestFirst)
-                Collections.reverse(acceptedEditions);  // newest editions first
+            // Sort with preference: non-Universes Beyond sets first, then by date
+            acceptedEditions.sort((ed1, ed2) -> {
+                boolean isUB1 = UNIVERSES_BEYOND_SETS.contains(ed1.getCode());
+                boolean isUB2 = UNIVERSES_BEYOND_SETS.contains(ed2.getCode());
+
+                // Non-UB sets come before UB sets
+                if (isUB1 != isUB2) {
+                    return isUB1 ? 1 : -1;
+                }
+
+                // Within same category (both UB or both non-UB), sort by date
+                int dateComparison = ed1.compareTo(ed2);
+                return artPref.latestFirst ? -dateComparison : dateComparison;
+            });
         }
 
         final Iterator<CardEdition> editionIterator = acceptedEditions.iterator();
