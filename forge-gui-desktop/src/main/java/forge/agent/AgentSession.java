@@ -19,6 +19,7 @@ import forge.game.spellability.StackItemView;
 import forge.game.zone.ZoneType;
 import forge.gamemodes.match.GameLobby.GameLobbyData;
 import forge.gamemodes.match.LobbySlot;
+import forge.gamemodes.match.NextGameDecision;
 import forge.gamemodes.net.ChatMessage;
 import forge.gamemodes.net.NetworkEventView;
 import forge.gamemodes.net.EventParticipant;
@@ -301,9 +302,12 @@ final class AgentSession implements ILobbyListener, IDraftEventHandler {
             case "alphaStrike" -> c.alphaStrike();
             case "undo" -> c.undoLastAction();
             case "concede" -> c.concede();
+            case "quit" -> c.nextGameDecision(NextGameDecision.QUIT);
+            case "continue" -> c.nextGameDecision(NextGameDecision.CONTINUE);
+            case "newMatch" -> c.nextGameDecision(NextGameDecision.NEW);
             default -> throw new IllegalArgumentException("unknown action " + action);
         }
-        changed();
+        // No revision bump here: the host's reaction is the change a waiting caller wants to see.
     }
 
     boolean decide(final int id, final List<Integer> indices, final String text) {

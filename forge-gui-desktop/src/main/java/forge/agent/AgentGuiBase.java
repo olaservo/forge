@@ -5,6 +5,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import forge.GuiDesktop;
+import forge.gamemodes.match.HostedMatch;
 
 /**
  * GuiDesktop without Swing threading. Protocol calls that the desktop runs on the EDT run here on
@@ -48,5 +49,11 @@ final class AgentGuiBase extends GuiDesktop {
     @Override
     public boolean isGuiThread() {
         return Thread.currentThread() == worker;
+    }
+
+    /** The desktop registers the match with its Swing singletons; there are none here. Used by the in-process tests that host. */
+    @Override
+    public HostedMatch hostMatch() {
+        return new HostedMatch();
     }
 }
