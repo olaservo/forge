@@ -132,6 +132,7 @@ public class AgentGameTest {
         int actions = 0;
         int decisions = 0;
         int casts = 0;
+        long lastCardSelect = 0;
         final Set<String> decisionKinds = new LinkedHashSet<>();
         final Set<String> tried = new HashSet<>();
         long seen = -1;
@@ -188,11 +189,14 @@ public class AgentGameTest {
             } else if (okEnabled && myTurn && "COMBAT_DECLARE_ATTACKERS".equals(phase) && tried.add(g.get("turn").getAsInt() + ":attack")) {
                 actions++;
                 http.post("/game/act", BridgeHttp.body("action", "alphaStrike"));
-            } else if (okEnabled && myTurn && phase.startsWith("MAIN") && nextUntried(g, tried) != null) {
+            } else if (okEnabled && myTurn && phase.startsWith("MAIN") && nextUntried(g, tried) != null
+                    && System.currentTimeMillis() - lastCardSelect > 2_000) {
+                // Two selections close together run concurrently on the host and can wedge the game thread.
                 final JsonObject card = nextUntried(g, tried);
                 tried.add(key(g, card));
                 casts++;
                 actions++;
+                lastCardSelect = System.currentTimeMillis();
                 http.post("/game/act", BridgeHttp.body("action", "selectCard", "id", card.get("id").getAsInt()));
             } else if (okEnabled) {
                 actions++;
@@ -200,10 +204,11 @@ public class AgentGameTest {
             } else if (cancelEnabled) {
                 actions++;
                 http.post("/game/act", BridgeHttp.body("action", "cancel"));
-            } else {
+            } else if (System.currentTimeMillis() - lastCardSelect > 2_000) {
                 final JsonObject card = firstCardInHand(g);
                 if (card != null) {
                     actions++;
+                    lastCardSelect = System.currentTimeMillis();
                     http.post("/game/act", BridgeHttp.body("action", "selectCard", "id", card.get("id").getAsInt()));
                 }
             }

@@ -291,7 +291,37 @@ final class AgentSession implements ILobbyListener, IDraftEventHandler {
         return pv;
     }
 
-    void act(final String action, final Integer id, final Integer color) {
+    /**
+     * Sends one controller call and returns once the host has reacted and gone quiet for
+     * {@code ACT_QUIET_MILLIS}, or after {@code ACT_FIRST_REACTION_MILLIS} with no reaction, capped at
+     * {@code ACT_SETTLE_MILLIS}. The host runs each call from a client on its own thread, so two calls
+     * sent back to back can overlap there; a desktop player's clicks never do. Waiting for the
+     * reaction to settle spaces them the same way.
+     */
+    void act(final String action, final Integer id, final Integer color) throws InterruptedException {
+        synchronized (actLock) {
+            long seen = revision.get();
+            send(action, id, color);
+            // First reaction, then let it settle: the host sends several updates per action.
+            final long deadline = System.currentTimeMillis() + ACT_SETTLE_MILLIS;
+            long wait = ACT_FIRST_REACTION_MILLIS;
+            while (System.currentTimeMillis() < deadline) {
+                final long now = awaitChange(seen, Math.min(wait, deadline - System.currentTimeMillis()));
+                if (now == seen) {
+                    break; // quiet: the host is done reacting, or never reacted
+                }
+                seen = now;
+                wait = ACT_QUIET_MILLIS;
+            }
+        }
+    }
+
+    private static final long ACT_FIRST_REACTION_MILLIS = 1500;
+    private static final long ACT_QUIET_MILLIS = 400;
+    private static final long ACT_SETTLE_MILLIS = 3000;
+    private final Object actLock = new Object();
+
+    private void send(final String action, final Integer id, final Integer color) {
         final IGameController c = controller();
         switch (action) {
             case "ok" -> c.selectButtonOk();
@@ -307,7 +337,6 @@ final class AgentSession implements ILobbyListener, IDraftEventHandler {
             case "newMatch" -> c.nextGameDecision(NextGameDecision.NEW);
             default -> throw new IllegalArgumentException("unknown action " + action);
         }
-        // No revision bump here: the host's reaction is the change a waiting caller wants to see.
     }
 
     boolean decide(final int id, final List<Integer> indices, final String text) {

@@ -232,6 +232,9 @@ final class AgentGuiGame extends NetworkGuiGame {
 
     @Override
     public void showPromptMessage(final PlayerView playerView, final String message, final CardView card) {
+        // The host's awaitNextInput arms a 250 ms timer that replaces the prompt with "Waiting for ..." and
+        // disables the buttons; the desktop cancels it when the real prompt arrives, and so must we.
+        cancelAwaitNextInput();
         promptMessage = message == null ? "" : message;
         promptCard = card;
         changed();
@@ -240,6 +243,7 @@ final class AgentGuiGame extends NetworkGuiGame {
     @Override
     public void updateButtons(final PlayerView owner, final String label1, final String label2, final boolean enable1,
             final boolean enable2, final boolean focus1) {
+        cancelAwaitNextInput();
         okLabel = label1;
         cancelLabel = label2;
         okEnabled = enable1;
