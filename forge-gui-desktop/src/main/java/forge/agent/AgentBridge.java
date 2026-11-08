@@ -155,13 +155,13 @@ public final class AgentBridge {
             }
             return DeckSerializer.fromSections(sections);
         }
-        final String name = str(body, "name", null);
-        if (name == null) {
+        if (!body.has("name") || body.get("name").isJsonNull()) {
             if (session.pool() != null) {
                 return session.pool();
             }
             throw new IllegalArgumentException("give a deck name, dck text, or draft a pool first");
         }
+        final String name = body.get("name").getAsString();
         for (final Deck d : FModel.getDecks().getNetworkEventDecks()) {
             if (d.getName().equalsIgnoreCase(name)) {
                 return d;

@@ -1,18 +1,23 @@
 package forge.agent;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import forge.deck.Deck;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+
 import forge.deck.DeckgenUtil;
 import forge.gamemodes.match.LobbySlot;
 import forge.gamemodes.match.LobbySlotType;
@@ -25,18 +30,30 @@ import forge.localinstance.properties.ForgePreferences.FPref;
 import forge.model.FModel;
 
 /**
- * Hosts a Limited match in-process with the host seat played by the AI and lets an
- * {@link AgentSession} take the other seat through the bridge's own API. The agent plays the
- * trivial policy from the plan: answer any pending decision with its first option, otherwise
- * press OK, and when OK is disabled select the first card in hand (discard to hand size). The
- * game must reach an end and the agent must be able to quit the match afterwards.
+ * Hosts a Limited match in-process with the host seat played by the AI and lets the bridge take
+ * the other seat, driven over its HTTP API like the MCP server does. The agent's deck is lands
+ * plus Goblin Bushwhacker (kicker: an optional-cost dialog when cast) and Civic Wayfinder (an
+ * enters trigger with a yes/no prompt, then a library-search dialog), so the pending-decision
+ * path is exercised. Policy: answer a decision with its first option; on our main phase try each
+ * hand card once (lands get played, spells get cast with Auto payment); otherwise press OK; when
+ * OK is disabled, Cancel if allowed, else select the first card in hand (discard to hand size).
  */
 public class AgentGameTest {
 
-    private static final int PORT = 36798;
+    private static final int HOST_PORT = 36798;
+    private static final String DECK = String.join("\n",
+            "[metadata]",
+            "Name=Agent Kicker Test",
+            "[Main]",
+            "10 Mountain",
+            "10 Forest",
+            "10 Goblin Bushwhacker",
+            "10 Civic Wayfinder");
+
     private FServerManager server;
     private ServerGameLobby lobby;
-    private AgentSession session;
+    private AgentBridge bridge;
+    private BridgeHttp http;
 
     @BeforeClass
     public void initializeModel() {
@@ -53,9 +70,12 @@ public class AgentGameTest {
     }
 
     @AfterClass(alwaysRun = true)
-    public void tearDown() {
-        if (session != null) {
-            session.disconnect();
+    public void tearDown() throws Exception {
+        if (http != null) {
+            http.saveFixtures("game");
+        }
+        if (bridge != null) {
+            bridge.stop();
         }
         if (server != null) {
             server.stopServer();
@@ -66,7 +86,7 @@ public class AgentGameTest {
     public void agentPlaysAMatchAgainstTheHostAi() throws Exception {
         server = FServerManager.getInstance();
         lobby = new ServerGameLobby();
-        server.startServer(PORT);
+        server.startServer(HOST_PORT);
         server.setLobby(lobby);
         lobby.setListener(new IUpdateable() {
             @Override
@@ -85,111 +105,192 @@ public class AgentGameTest {
         hostSlot.setIsReady(true);
         lobby.setLimitedMode(true);
 
-        session = new AgentSession();
-        session.connect("127.0.0.1", PORT, "AgentBot");
-        waitFor("agent takes a lobby slot", 20_000, () -> ((Number) session.lobbySnapshot().get("mySlot")).intValue() == 1);
+        bridge = new AgentBridge();
+        bridge.start(0);
+        http = new BridgeHttp(bridge.port());
 
-        final Deck agentDeck = DeckgenUtil.getRandomColorDeck(false);
-        session.setDeck(agentDeck);
-        session.setReady(true);
+        JsonObject st = http.post("/connect", BridgeHttp.body("host", "127.0.0.1", "port", HOST_PORT, "name", "AgentBot"));
+        assertTrue(st.getAsJsonObject("connection").get("connected").getAsBoolean());
+        waitFor("agent takes lobby slot 1", 20_000, () -> http.get("/status").getAsJsonObject("lobby").get("mySlot").getAsInt() == 1);
+
+        final JsonObject deck = http.post("/lobby/deck", BridgeHttp.body("dck", DECK));
+        assertEquals(deck.get("size").getAsInt(), 40, "deck text parsed: " + deck);
+        final JsonObject lobbyAfterReady = http.post("/lobby/ready", BridgeHttp.body("ready", true));
+        assertEquals(lobbyAfterReady.get("mySlot").getAsInt(), 1);
+        http.post("/chat", BridgeHttp.body("text", "gl hf"));
         waitFor("host sees the agent's deck and ready flag", 20_000,
                 () -> lobby.getSlot(1).isReady() && lobby.getSlot(1).getDeck() != null);
+
+        final JsonObject err = http.postExpectingError("/game/act", BridgeHttp.body("action", "ok"));
+        assertTrue(err.get("error").getAsString().contains("no game"), "acting before the game is an error: " + err);
 
         final Runnable start = lobby.startGame();
         assertNotNull(start, "lobby accepted the match setup");
         start.run();
-
-        waitFor("agent gets openView", 30_000, () -> Boolean.TRUE.equals(session.gameSnapshot(false).get("inGame")));
+        waitFor("agent gets openView", 30_000, () -> http.get("/game").get("inGame").getAsBoolean());
 
         int actions = 0;
         int decisions = 0;
+        int casts = 0;
+        final Set<String> decisionKinds = new LinkedHashSet<>();
+        final Set<String> tried = new HashSet<>();
         long seen = -1;
+        int quiet = 0;
         final long deadline = System.currentTimeMillis() + 540_000;
-        Map<String, Object> g = session.gameSnapshot(false);
-        while (!Boolean.TRUE.equals(g.get("gameOver"))) {
+        JsonObject g = http.get("/game");
+        while (!g.get("gameOver").getAsBoolean()) {
             assertTrue(System.currentTimeMillis() < deadline, "game did not end in time; last state " + g);
-            final long rev = session.revision();
-            if (rev == seen) {
-                // Nothing new since we last acted: wait for the host rather than resend.
-                session.awaitChange(rev, 3_000);
-                g = session.gameSnapshot(false);
-                continue;
+            final JsonObject status = http.get("/wait", Map.of("since", String.valueOf(seen), "timeout", "3"));
+            final long rev = status.get("revision").getAsLong();
+            if (rev == seen && ++quiet < 2) {
+                continue; // nothing new since we last acted; the host is thinking
             }
+            // Something changed, or six seconds passed with no reaction (a rejected card selection
+            // produces no event at all), so re-evaluate the current state.
+            quiet = 0;
             seen = rev;
-            @SuppressWarnings("unchecked")
-            final Map<String, Object> pd = (Map<String, Object>) g.get("pendingDecision");
-            @SuppressWarnings("unchecked")
-            final Map<String, Object> buttons = (Map<String, Object>) g.get("buttons");
-            final String prompt = String.valueOf(g.get("prompt"));
-            if (pd != null) {
+            g = http.get("/game");
+            if (g.get("gameOver").getAsBoolean()) {
+                break;
+            }
+            final JsonObject buttons = g.getAsJsonObject("buttons");
+            final boolean okEnabled = buttons.get("okEnabled").getAsBoolean();
+            final boolean cancelEnabled = buttons.get("cancelEnabled").getAsBoolean();
+            final String okLabel = buttons.get("ok").getAsString();
+            final JsonElement pd = g.get("pendingDecision");
+            final boolean myTurn = isMe(g, g.get("activePlayer"));
+            final String phase = g.get("phase").isJsonNull() ? "" : g.get("phase").getAsString();
+
+            if (pd != null && !pd.isJsonNull()) {
+                final JsonObject d = pd.getAsJsonObject();
+                http.record("GET /game#decision", g);
                 decisions++;
-                final int id = ((Number) pd.get("id")).intValue();
-                final String kind = (String) pd.get("kind");
-                @SuppressWarnings("unchecked")
-                final List<String> options = (List<String>) pd.get("options");
+                decisionKinds.add(d.get("kind").getAsString());
+                final JsonArray choices = new JsonArray();
+                final String kind = d.get("kind").getAsString();
+                String text = null;
                 if ("text".equals(kind) || "number".equals(kind)) {
-                    final String dflt = (String) pd.get("default");
-                    assertTrue(session.decide(id, List.of(), dflt == null ? "0" : dflt));
+                    text = d.get("default").isJsonNull() ? "0" : d.get("default").getAsString();
                 } else {
-                    final int min = ((Number) pd.get("min")).intValue();
-                    final List<Integer> first = new ArrayList<>();
-                    for (int i = 0; i < Math.max(min, 1) && i < options.size(); i++) {
-                        first.add(i);
+                    final int min = d.get("min").getAsInt();
+                    final int n = d.getAsJsonArray("options").size();
+                    for (int i = 0; i < Math.max(min, 1) && i < n; i++) {
+                        choices.add(i);
                     }
-                    assertTrue(session.decide(id, first, null));
                 }
-            } else if (prompt.startsWith("Waiting for")) {
-                // The other player is acting; nothing to do.
-            } else if (Boolean.TRUE.equals(buttons.get("okEnabled"))) {
+                http.post("/game/decide", BridgeHttp.body("id", d.get("id").getAsInt(), "choices", choices, "text", text));
+            } else if (!iHavePriority(g) && g.get("prompt").getAsString().startsWith("Waiting for")) {
+                // The other player is acting; nothing to do. Both signals are needed: the prompt text lags
+                // behind the priority flag, and before the first turn (mulligans) nobody has priority.
+            } else if ("Auto".equals(okLabel)) {
                 actions++;
-                session.act("ok", null, null);
+                http.post("/game/act", BridgeHttp.body("action", okEnabled ? "ok" : "cancel"));
+            } else if (okEnabled && myTurn && "COMBAT_DECLARE_ATTACKERS".equals(phase) && tried.add(g.get("turn").getAsInt() + ":attack")) {
+                actions++;
+                http.post("/game/act", BridgeHttp.body("action", "alphaStrike"));
+            } else if (okEnabled && myTurn && phase.startsWith("MAIN") && nextUntried(g, tried) != null) {
+                final JsonObject card = nextUntried(g, tried);
+                tried.add(key(g, card));
+                casts++;
+                actions++;
+                http.post("/game/act", BridgeHttp.body("action", "selectCard", "id", card.get("id").getAsInt()));
+            } else if (okEnabled) {
+                actions++;
+                http.post("/game/act", BridgeHttp.body("action", "ok"));
+            } else if (cancelEnabled) {
+                actions++;
+                http.post("/game/act", BridgeHttp.body("action", "cancel"));
             } else {
-                final Integer handCard = firstCardInHand();
-                if (handCard != null) {
+                final JsonObject card = firstCardInHand(g);
+                if (card != null) {
                     actions++;
-                    session.act("selectCard", handCard, null);
+                    http.post("/game/act", BridgeHttp.body("action", "selectCard", "id", card.get("id").getAsInt()));
                 }
             }
-            session.awaitChange(rev, 3_000);
-            g = session.gameSnapshot(false);
         }
 
-        final Map<String, Object> full = session.gameSnapshot(true);
-        assertEquals(full.get("gameOver"), Boolean.TRUE);
-        assertNotNull(full.get("winner"), "winner reported: " + full);
-        assertTrue(((Number) full.get("turn")).intValue() > 1, "more than one turn: " + full);
+        final JsonObject full = http.get("/game");
+        assertTrue(full.get("gameOver").getAsBoolean());
+        assertFalse(full.get("winner").getAsString().isEmpty(), "winner reported: " + full);
+        assertTrue(full.get("turn").getAsInt() > 1, "more than one turn: " + full);
         assertTrue(actions > 10, "agent passed priority through the game: " + actions);
-        assertTrue(session.gameLog(0).size() > 10, "game log arrived");
+        assertTrue(decisions > 0, "at least one decision dialog was answered (kicker or library search)");
+        final JsonObject log = http.get("/game/log", Map.of("since", "0"));
+        assertTrue(log.getAsJsonArray("log").size() > 10, "game log arrived");
         System.out.println("[AgentGameTest] game over on turn " + full.get("turn") + ", winner " + full.get("winner")
-                + ", " + actions + " actions, " + decisions + " decisions, " + full.get("incorrectActions") + " incorrect");
+                + ", " + actions + " actions, " + casts + " card selections on our main phase, " + decisions + " decisions " + decisionKinds
+                + ", " + full.get("incorrectActions") + " incorrect");
 
-        session.act("quit", null, null);
+        http.post("/game/act", BridgeHttp.body("action", "quit"));
         waitFor("host ends the match", 30_000, () -> !lobby.isMatchActive());
-        assertTrue(!lobby.getSlot(1).isReady(), "lobby resets ready flags after the match");
+        assertFalse(lobby.getSlot(1).isReady(), "lobby resets ready flags after the match");
+        final JsonObject end = http.get("/status");
+        assertFalse(end.getAsJsonObject("game").get("inGame").getAsBoolean());
+        http.post("/disconnect", new JsonObject());
     }
 
-    @SuppressWarnings("unchecked")
-    private Integer firstCardInHand() {
-        final Map<String, Object> full = session.gameSnapshot(true);
-        final List<Map<String, Object>> players = (List<Map<String, Object>>) full.get("players");
-        if (players == null) {
+    private static boolean isMe(final JsonObject g, final JsonElement name) {
+        return name != null && !name.isJsonNull() && !g.get("me").isJsonNull() && name.getAsString().equals(g.get("me").getAsString());
+    }
+
+    private static boolean iHavePriority(final JsonObject g) {
+        final JsonElement players = g.get("players");
+        if (players == null || !players.isJsonArray()) {
+            return false;
+        }
+        for (final JsonElement p : players.getAsJsonArray()) {
+            final JsonObject po = p.getAsJsonObject();
+            if (po.get("isMe").getAsBoolean()) {
+                return po.get("hasPriority").getAsBoolean();
+            }
+        }
+        return false;
+    }
+
+    /** One try per card per turn: a rejected selection (no mana, second land) is not worth repeating. */
+    private static String key(final JsonObject g, final JsonObject card) {
+        return g.get("turn").getAsInt() + ":" + card.get("id").getAsInt();
+    }
+
+    private static JsonObject nextUntried(final JsonObject g, final Set<String> tried) {
+        final JsonArray hand = myHand(g);
+        if (hand == null) {
             return null;
         }
-        for (final Map<String, Object> p : players) {
-            if (Boolean.TRUE.equals(p.get("isMe"))) {
-                final List<Map<String, Object>> hand = (List<Map<String, Object>>) p.get("hand");
-                if (hand != null && !hand.isEmpty()) {
-                    return ((Number) hand.get(0).get("id")).intValue();
-                }
+        for (final JsonElement c : hand) {
+            if (!tried.contains(key(g, c.getAsJsonObject()))) {
+                return c.getAsJsonObject();
             }
         }
         return null;
     }
 
-    private static void waitFor(final String what, final long timeoutMillis, final java.util.function.BooleanSupplier cond)
-            throws InterruptedException {
+    private static JsonObject firstCardInHand(final JsonObject g) {
+        final JsonArray hand = myHand(g);
+        return hand == null || hand.isEmpty() ? null : hand.get(0).getAsJsonObject();
+    }
+
+    private static JsonArray myHand(final JsonObject g) {
+        final JsonElement players = g.get("players");
+        if (players == null || !players.isJsonArray()) {
+            return null;
+        }
+        for (final JsonElement p : players.getAsJsonArray()) {
+            final JsonObject po = p.getAsJsonObject();
+            if (po.get("isMe").getAsBoolean() && po.has("hand")) {
+                return po.getAsJsonArray("hand");
+            }
+        }
+        return null;
+    }
+
+    interface Check {
+        boolean ok() throws Exception;
+    }
+
+    private static void waitFor(final String what, final long timeoutMillis, final Check cond) throws Exception {
         final long deadline = System.currentTimeMillis() + timeoutMillis;
-        while (!cond.getAsBoolean()) {
+        while (!cond.ok()) {
             if (System.currentTimeMillis() > deadline) {
                 throw new AssertionError("timed out waiting for: " + what);
             }
