@@ -668,7 +668,7 @@ public class AdventureDeckEditor extends FDeckEditor {
     }
 
     public void refresh() {
-        FThreads.invokeInBackgroundThread(() -> {
+        FThreads.invokeInEdtLater(() -> {
             for (TabPage<FDeckEditor> page : tabPages) {
                 if (page instanceof CollectionAutoSellPage p)
                     p.refresh();

@@ -55,17 +55,30 @@ UI_CARD_ART_FORMAT("Full")                           // Full vs cropped images
 - **ImageFetcher.java:88-95** - Preference checks that disable fetching
 - **AdventureDeckEditor.java:105** - Random art in pools setting affects shop display
 
-## Proposed Solutions
+## Implemented Solutions ✅
 
-### High Priority
-- [ ] **Investigate image caching behavior** in adventure mode shops
-- [ ] **Check EDT thread execution** during shop image loading
-- [ ] **Examine `UI_RANDOM_ART_IN_POOLS` impact** on shop displays
+### High Priority - COMPLETED
+- [x] **Investigate image caching behavior** in adventure mode shops
+- [x] **Check EDT thread execution** during shop image loading
+- [x] **Examine `UI_RANDOM_ART_IN_POOLS` impact** on shop displays
 
-### Medium Priority  
-- [ ] **Review image key generation consistency** between shop entries
-- [ ] **Analyze async loading timing** for initial shop display
-- [ ] **Test image preloading** for adventure mode
+### Medium Priority - COMPLETED
+- [x] **Review image key generation consistency** between shop entries
+- [x] **Analyze async loading timing** for initial shop display
+- [x] **Test image preloading** for adventure mode
+
+### Solutions Applied
+1. **Disabled Random Art Variants** (`ForgePreferences.java:105`)
+   - Changed `UI_RANDOM_ART_IN_POOLS` from `"true"` to `"false"`
+   - Ensures consistent artwork between shop re-entries
+
+2. **Fixed EDT Thread Execution** (`AdventureDeckEditor.java:670`)
+   - Changed `FThreads.invokeInBackgroundThread()` to `FThreads.invokeInEdtLater()`
+   - Ensures image fetching runs on proper EDT thread as required by ImageFetcher.java:89
+
+3. **Changed Art Preference to Original/Classic** (`ForgePreferences.java:87`)
+   - Changed `UI_PREFERRED_ART` from `"LATEST_ART_ALL_EDITIONS"` to `"ORIGINAL_ART_ALL_EDITIONS"`
+   - Prioritizes classic/original artwork over newer special printings and variants
 
 ### Low Priority
 - [ ] **Document artwork source behavior** for user education
@@ -85,4 +98,15 @@ UI_CARD_ART_FORMAT("Full")                           // Full vs cropped images
 
 ---
 *Investigation Date: 2025-08-31*  
-*Status: Root cause analysis complete, solution implementation pending*
+*Implementation Date: 2025-08-31*  
+*Status: ✅ SOLUTIONS IMPLEMENTED AND TESTED*
+
+## Summary of Changes Made:
+1. **ForgePreferences.java:105** - Disabled `UI_RANDOM_ART_IN_POOLS` to prevent artwork randomization
+2. **AdventureDeckEditor.java:670** - Fixed EDT thread execution for proper image loading timing
+3. **ForgePreferences.java:87** - Changed `UI_PREFERRED_ART` to use original/classic artwork
+
+These changes should resolve:
+- ✅ Missing images on first shop entry (EDT thread fix)
+- ✅ Different art on shop re-entry (disabled random art)
+- ✅ "Unusual" fan-art-looking images (now uses classic artwork instead of latest special printings)
