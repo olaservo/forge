@@ -20,6 +20,7 @@ import forge.game.zone.ZoneType;
 import forge.gamemodes.match.GameLobby.GameLobbyData;
 import forge.gamemodes.match.LobbySlot;
 import forge.gamemodes.match.NextGameDecision;
+import forge.gamemodes.match.Selection;
 import forge.gamemodes.net.ChatMessage;
 import forge.gamemodes.net.NetworkEventView;
 import forge.gamemodes.net.EventParticipant;
@@ -171,6 +172,10 @@ final class AgentSession implements ILobbyListener, IDraftEventHandler {
 
     void setReady(final boolean ready) {
         requireClient().send(UpdateLobbyPlayerEvent.isReadyUpdate(ready));
+    }
+
+    void setAvatar(final int index) {
+        requireClient().send(UpdateLobbyPlayerEvent.avatarUpdate(index));
     }
 
     void setDeck(final Deck deck) {
@@ -381,6 +386,7 @@ final class AgentSession implements ILobbyListener, IDraftEventHandler {
             sm.put("type", s.getType().name());
             sm.put("name", s.getName());
             sm.put("ready", s.isReady());
+            sm.put("avatar", s.getAvatarIndex());
             sm.put("team", s.getTeam());
             sm.put("deckName", s.getDeckName());
             sm.put("hasDeck", s.getDeck() != null);
@@ -580,6 +586,21 @@ final class AgentSession implements ILobbyListener, IDraftEventHandler {
                 attacks.add(am);
             }
             m.put("combat", attacks);
+        }
+        // Cards the current prompt offers, including ones in zones the state does not list (a library search).
+        final Selection sel = gui.getSelection();
+        if (sel != null && !sel.cards().isEmpty()) {
+            final Map<String, Object> sm = new LinkedHashMap<>();
+            sm.put("min", sel.min());
+            sm.put("max", sel.max());
+            final List<Map<String, Object>> offered = new ArrayList<>();
+            for (final CardView cv : sel.cards()) {
+                if (cv != null) {
+                    offered.add(describe(cv));
+                }
+            }
+            sm.put("cards", offered);
+            m.put("selection", sm);
         }
         return m;
     }

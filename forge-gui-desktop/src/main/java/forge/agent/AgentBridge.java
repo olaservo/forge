@@ -96,6 +96,9 @@ public final class AgentBridge {
             case "POST /lobby/ready":
                 session.setReady(!body.has("ready") || body.get("ready").getAsBoolean());
                 return session.lobbySnapshot();
+            case "POST /lobby/avatar":
+                session.setAvatar(body.get("index").getAsInt());
+                return session.lobbySnapshot();
             case "POST /lobby/deck": {
                 final Deck deck = resolveDeck(body);
                 session.setDeck(deck);
